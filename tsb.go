@@ -18,7 +18,6 @@ import (
 )
 
 var workerCount int
-var filename	string
 var wg sync.WaitGroup
 var dbconfig dbconfiguration
 
@@ -42,8 +41,6 @@ func init() {
 	flag.IntVar(&workerCount, "w", 1, "number of workers to create for executing queries")
 
 	flag.Parse()
-
-	filename = flag.Arg(0)
 
 	if err := godotenv.Load(); err != nil {
 		log.Fatalf("failed to load environment: %v", err)
@@ -85,7 +82,7 @@ func Execute() {
 
 	csvRecords := make(chan Record)
 
-	go parseCSVFile(filename, csvRecords)
+	go parseCSVFile(flag.Arg(0), csvRecords)
 
 	for r := range csvRecords {
 		workerId := int(xxhash.Sum64String(r.Host) % uint64(workerCount))
@@ -106,7 +103,7 @@ func Execute() {
 func parseCSVFile(filename string, records chan Record) {
 	f, err := os.Open(filename)
 	if err != nil {
-		fmt.Println("error reading file: ", err)
+		log.Fatalf("could not open file %s: %v", filename, err)
 	}
 
 	defer f.Close()
