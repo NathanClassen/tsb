@@ -23,30 +23,29 @@ var workerCount int
 var wg sync.WaitGroup
 var db *sql.DB
 
-
 type Record struct {
-	Host	string
-	Start	string
-	End		string
+	Host  string
+	Start string
+	End   string
 }
 
-//	parse cli arguments
+// parse cli arguments
 func init() {
 	flag.IntVar(&workerCount, "w", 1, "number of workers to create for executing queries")
 
 	flag.Parse()
 }
 
-//	initialize database connections
-func init () {
+// initialize database connections
+func init() {
 	var err error
-	
+
 	if err = godotenv.Load(); err != nil {
 		log.Fatalf("failed to load environment: %v", err)
 	}
 
 	connstr := fmt.Sprintf("user=%s password=%s host=%s dbname=%s sslmode=%s", os.Getenv("DB_USER"), os.Getenv("DB_PASSWORD"), os.Getenv("DB_HOST"), os.Getenv("DB_NAME"), os.Getenv("DB_SSL_MODE"))
-	
+
 	if db, err = sql.Open(os.Getenv("DB_DATABASE"), connstr); err != nil {
 		log.Fatal("could not connect to database: ", err)
 	}
@@ -54,7 +53,7 @@ func init () {
 	db.SetMaxOpenConns(workerCount)
 }
 
-//	initialize worker pool
+// initialize worker pool
 func init() {
 
 }
@@ -65,7 +64,7 @@ func Execute() {
 	completedJobs := make(chan time.Duration, 2)
 
 	wp := worker.NewWorkerPool[Record, time.Duration](workerCount, completedJobs)
-	wp.InitWorkers(func (r Record) time.Duration {
+	wp.InitWorkers(func(r Record) time.Duration {
 		startTime := time.Now()
 		ExecuteTSQuery(db, r.Start, r.End, r.Host)
 		return time.Since(startTime)
@@ -99,7 +98,7 @@ func parseCSVFile(filename string, records chan Record) error {
 	defer f.Close()
 
 	r := csv.NewReader(f)
-	r.Read()	//	TEMP: read off headers from first line-find better way?
+	r.Read() //	TEMP: read off headers from first line-find better way?
 
 	for {
 		r, err := r.Read()
@@ -111,10 +110,10 @@ func parseCSVFile(filename string, records chan Record) error {
 			}
 		}
 
-		record := Record {
-			Host: r[0],
+		record := Record{
+			Host:  r[0],
 			Start: r[1],
-			End: r[2],
+			End:   r[2],
 		}
 
 		records <- record
@@ -158,7 +157,7 @@ func DisplayResults(c <-chan time.Duration, waitgroup *sync.WaitGroup) {
 
 func ExecuteTSQuery(db *sql.DB, start, end, host string) {
 	ExecuteQuery(db,
-	`with minutes as (
+		`with minutes as (
     select
         generate_series(
             timestamp '`+start+`',
