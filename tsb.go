@@ -3,8 +3,10 @@ package tsb
 import (
 	"database/sql"
 	"encoding/csv"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"sync"
@@ -19,7 +21,7 @@ import (
 
 var workerCount int
 var wg sync.WaitGroup
-var dbconfig dbconfiguration
+var db *sql.DB
 
 
 type Record struct {
@@ -28,57 +30,46 @@ type Record struct {
 	End		string
 }
 
-type dbconfiguration struct {
-	database string
-	user string
-	password string
-	host string
-	dbname string
-	sslmode string
-}
-
+//	parse cli arguments
 func init() {
 	flag.IntVar(&workerCount, "w", 1, "number of workers to create for executing queries")
 
 	flag.Parse()
+}
 
-	if err := godotenv.Load(); err != nil {
+//	initialize database connections
+func init () {
+	var err error
+	
+	if err = godotenv.Load(); err != nil {
 		log.Fatalf("failed to load environment: %v", err)
 	}
 
-	dbconfig = dbconfiguration{
-		os.Getenv("DB_DATABASE"),
-		os.Getenv("DB_USER"),
-		os.Getenv("DB_PASSWORD"),
-		os.Getenv("DB_HOST"),
-		os.Getenv("DB_NAME"),
-		os.Getenv("DB_SSL_MODE"),
-	}
-}
-
-func Execute() {
-	connstr := fmt.Sprintf("user=%s password=%s host=%s dbname=%s sslmode=%s",
-		dbconfig.user,dbconfig.password,dbconfig.host,dbconfig.dbname,dbconfig.sslmode)
-	db, err := sql.Open(os.Getenv("DB_DATABASE"), connstr)
-	if err != nil {
-		log.Fatal("error opening db connection: ",err)
+	connstr := fmt.Sprintf("user=%s password=%s host=%s dbname=%s sslmode=%s", os.Getenv("DB_USER"), os.Getenv("DB_PASSWORD"), os.Getenv("DB_HOST"), os.Getenv("DB_NAME"), os.Getenv("DB_SSL_MODE"))
+	
+	if db, err = sql.Open(os.Getenv("DB_DATABASE"), connstr); err != nil {
+		log.Fatal("could not connect to database: ", err)
 	}
 
 	db.SetMaxOpenConns(workerCount)
+}
 
+//	initialize worker pool
+func init() {
+
+}
+
+func Execute() {
 	defer db.Close()
 
 	completedJobs := make(chan time.Duration, 2)
 
 	wp := worker.NewWorkerPool[Record, time.Duration](workerCount, completedJobs)
-
 	wp.InitWorkers(func (r Record) time.Duration {
 		startTime := time.Now()
 		ExecuteTSQuery(db, r.Start, r.End, r.Host)
 		return time.Since(startTime)
 	})
-
-	start := time.Now()	//	TEMP; seeing how long executions take w different options
 
 	csvRecords := make(chan Record)
 
@@ -97,13 +88,12 @@ func Execute() {
 	}()
 
 	DisplayResults(completedJobs, &wg)
-	fmt.Println(time.Since(start))
 }
 
-func parseCSVFile(filename string, records chan Record) {
+func parseCSVFile(filename string, records chan Record) error {
 	f, err := os.Open(filename)
 	if err != nil {
-		log.Fatalf("could not open file %s: %v", filename, err)
+		return err
 	}
 
 	defer f.Close()
@@ -111,12 +101,14 @@ func parseCSVFile(filename string, records chan Record) {
 	r := csv.NewReader(f)
 	r.Read()	//	TEMP: read off headers from first line-find better way?
 
-	// read file, dispatching routines for each line
 	for {
 		r, err := r.Read()
 		if err != nil {
-			fmt.Printf("error reading next record %v\n",err)
-			break
+			if errors.Is(err, io.EOF) {
+				break
+			} else {
+				return err
+			}
 		}
 
 		record := Record {
@@ -128,6 +120,7 @@ func parseCSVFile(filename string, records chan Record) {
 		records <- record
 	}
 	close(records)
+	return nil
 }
 
 func DisplayResults(c <-chan time.Duration, waitgroup *sync.WaitGroup) {

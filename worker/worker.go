@@ -22,7 +22,7 @@ func NewWorkerPool[T any, V any](size int, done chan V) *WorkerPool[T,V] {
 }
 
 func (wp *WorkerPool[T, V])SendJob(workerId int, job T) {
-	wc, _ := wp.workerMap[workerId]
+	wc := wp.workerMap[workerId]
 	wc <- job
 }
 
