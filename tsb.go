@@ -44,7 +44,13 @@ func init() {
 		log.Fatalf("failed to load environment: %v", err)
 	}
 
-	connstr := fmt.Sprintf("user=%s password=%s host=%s dbname=%s sslmode=%s", os.Getenv("DB_USER"), os.Getenv("DB_PASSWORD"), os.Getenv("DB_HOST"), os.Getenv("DB_NAME"), os.Getenv("DB_SSL_MODE"))
+	connstr := fmt.Sprintf("user=%s password=%s host=%s dbname=%s sslmode=%s",
+		os.Getenv("DB_USER"),
+		os.Getenv("DB_PASSWORD"),
+		os.Getenv("DB_HOST"),
+		os.Getenv("DB_NAME"),
+		os.Getenv("DB_SSL_MODE"),
+	)
 
 	if db, err = sql.Open(os.Getenv("DB_DATABASE"), connstr); err != nil {
 		log.Fatal("could not connect to database: ", err)
