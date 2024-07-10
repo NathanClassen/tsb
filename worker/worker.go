@@ -1,10 +1,5 @@
 package worker
 
-import (
-	"fmt"
-)
-
-
 type WorkerPool[T any, V any] struct {
 	Size 		int
 	Done 		chan V
@@ -27,11 +22,7 @@ func NewWorkerPool[T any, V any](size int, done chan V) *WorkerPool[T,V] {
 }
 
 func (wp *WorkerPool[T, V])SendJob(workerId int, job T) {
-	wc, found := wp.workerMap[workerId]
-	if !found {
-		fmt.Printf("could not find work channel in %v for %d\n\n",wp.workerMap,workerId)
-	}
-	
+	wc, _ := wp.workerMap[workerId]
 	wc <- job
 }
 
