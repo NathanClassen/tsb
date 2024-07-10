@@ -5,25 +5,37 @@ import (
 	"encoding/csv"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"sync"
 	"time"
 	"tsb/worker"
 
 	"github.com/cespare/xxhash"
+	"github.com/joho/godotenv"
+
 	_ "github.com/lib/pq"
 )
 
-var MAX_WORKERS uint64 = 20
-var FILE_NAME = "/Users/nathanclassen/Desktop/TimescaleDB_coding_assignment-RD_eng_setup/query_params.csv"
-
 var workerCount int
 var filename	string
+var wg sync.WaitGroup
+var dbconfig dbconfiguration
+
 
 type Record struct {
 	Host	string
 	Start	string
 	End		string
+}
+
+type dbconfiguration struct {
+	database string
+	user string
+	password string
+	host string
+	dbname string
+	sslmode string
 }
 
 func init() {
@@ -32,24 +44,36 @@ func init() {
 	flag.Parse()
 
 	filename = flag.Arg(0)
+
+	if err := godotenv.Load(); err != nil {
+		log.Fatalf("failed to load environment: %v", err)
+	}
+
+	dbconfig = dbconfiguration{
+		os.Getenv("DB_DATABASE"),
+		os.Getenv("DB_USER"),
+		os.Getenv("DB_PASSWORD"),
+		os.Getenv("DB_HOST"),
+		os.Getenv("DB_NAME"),
+		os.Getenv("DB_SSL_MODE"),
+	}
 }
 
 func Execute() {
-	//	todo:	read cmmd input
-	db, err := sql.Open("postgres", "user=postgres password=password host=localhost dbname=homework sslmode=disable")
+	connstr := fmt.Sprintf("user=%s password=%s host=%s dbname=%s sslmode=%s",
+		dbconfig.user,dbconfig.password,dbconfig.host,dbconfig.dbname,dbconfig.sslmode)
+	db, err := sql.Open(os.Getenv("DB_DATABASE"), connstr)
 	if err != nil {
-		fmt.Println("error opening db connection: ",err)
+		log.Fatal("error opening db connection: ",err)
 	}
+
+	db.SetMaxOpenConns(workerCount)
 
 	defer db.Close()
 
-	db.SetMaxOpenConns(int(MAX_WORKERS))
-
-	wg := sync.WaitGroup{}
-
 	completedJobs := make(chan time.Duration, 2)
 
-	wp := worker.NewWorkerPool[Record, time.Duration](int(MAX_WORKERS), completedJobs)
+	wp := worker.NewWorkerPool[Record, time.Duration](workerCount, completedJobs)
 
 	wp.InitWorkers(func (r Record) time.Duration {
 		startTime := time.Now()
@@ -57,9 +81,30 @@ func Execute() {
 		return time.Since(startTime)
 	})
 
-	start := time.Now()	// temp; seeing how long executions take w different options
+	start := time.Now()	//	TEMP; seeing how long executions take w different options
 
-	f, err := os.Open(FILE_NAME)
+	csvRecords := make(chan Record)
+
+	go parseCSVFile(filename, csvRecords)
+
+	for r := range csvRecords {
+		workerId := int(xxhash.Sum64String(r.Host) % uint64(workerCount))
+		go wp.SendJob(workerId, r)
+		wg.Add(1)
+	}
+
+	go func() {
+		wg.Wait()
+		wp.Close()
+		close(completedJobs)
+	}()
+
+	DisplayResults(completedJobs, &wg)
+	fmt.Println(time.Since(start))
+}
+
+func parseCSVFile(filename string, records chan Record) {
+	f, err := os.Open(filename)
 	if err != nil {
 		fmt.Println("error reading file: ", err)
 	}
@@ -67,7 +112,7 @@ func Execute() {
 	defer f.Close()
 
 	r := csv.NewReader(f)
-	r.Read()	//	read off headers from first line
+	r.Read()	//	TEMP: read off headers from first line-find better way?
 
 	// read file, dispatching routines for each line
 	for {
@@ -83,42 +128,9 @@ func Execute() {
 			End: r[2],
 		}
 
-		go func() {
-			
-			hash := int(xxhash.Sum64String(record.Host) % MAX_WORKERS)
-
-			wc, found := wp.WorkerMap[hash]
-			if !found {
-				fmt.Printf("could not find work channel in %v for %d\n\n",wp.WorkerMap,hash)
-			}
-			wg.Add(1)
-			wc <- record
-		}()
-		
+		records <- record
 	}
-
-	go func() {
-		wg.Wait()
-
-		wp.Close()
-		close(completedJobs)
-	}()
-
-
-	 //	current problems is that the task given to each worker is decrementing the wg.
-	//	however, the wg ma be decrememented before the result is put onto the done channel.
-
-	/*
-		create orchestrate func and call aggregation function as last call. It will loop over the completed channel
-		and calculate the latest stats. This loop will last as long as the channel is open.
-
-		before calling it, start a background routine that will await the wg. the wg should gurantee that stats have been collected.
-		once the wg is empty, the background routine will close the complted channel, thus telling the aggregate func to stop looping 
-		and finally display it's calculations. Can also close the work group.
-	*/
-	DisplayResults(completedJobs, &wg)
-	end := time.Now()
-	fmt.Println(end.Sub(start))
+	close(records)
 }
 
 func DisplayResults(c <-chan time.Duration, waitgroup *sync.WaitGroup) {

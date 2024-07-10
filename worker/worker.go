@@ -1,10 +1,14 @@
 package worker
 
+import (
+	"fmt"
+)
+
 
 type WorkerPool[T any, V any] struct {
 	Size 		int
 	Done 		chan V
-	WorkerMap	map[int]chan T
+	workerMap	map[int]chan T
 }
 
 func NewWorkerPool[T any, V any](size int, done chan V) *WorkerPool[T,V] {
@@ -17,14 +21,23 @@ func NewWorkerPool[T any, V any](size int, done chan V) *WorkerPool[T,V] {
 	return &WorkerPool[T,V]{
 		Size: size,
 		Done: done,
-		WorkerMap: wm,
+		workerMap: wm,
 	}
 
 }
 
+func (wp *WorkerPool[T, V])SendJob(workerId int, job T) {
+	wc, found := wp.workerMap[workerId]
+	if !found {
+		fmt.Printf("could not find work channel in %v for %d\n\n",wp.workerMap,workerId)
+	}
+	
+	wc <- job
+}
+
 func (wp *WorkerPool[T,V])InitWorkers(task func(j T) V) {
 
-	for _,v := range wp.WorkerMap {
+	for _,v := range wp.workerMap {
 		go worker[T,V](
 			func(j T) V{
 				return task(j)
@@ -35,7 +48,7 @@ func (wp *WorkerPool[T,V])InitWorkers(task func(j T) V) {
 }
 
 func (wp *WorkerPool[T, V])Close() {
-	for _, v := range wp.WorkerMap {
+	for _, v := range wp.workerMap {
 		close(v)
 	}
 }
