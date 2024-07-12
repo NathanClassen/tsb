@@ -249,7 +249,7 @@ func formattedResult(stats StatResult) string {
 	return fmt.Sprintf(`
 	total queries:               %d
 	total time:                  %s
-	fumulative processing time:  %s
+	cumulative processing time:  %s
 	minimum single query time:   %s
 	maximum single query time:   %s
 	median query time:           %s
