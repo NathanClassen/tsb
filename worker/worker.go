@@ -1,8 +1,14 @@
 package worker
 
+import (
+	"context"
+	"log"
+)
+
 type WorkerPool[T any, V any] struct {
 	Size      int
 	Done      chan V
+	Closed	  bool
 	workerMap map[int]chan T
 }
 
@@ -22,33 +28,39 @@ func NewWorkerPool[T any, V any](size int, done chan V) *WorkerPool[T, V] {
 }
 
 func (wp *WorkerPool[T, V]) SendJob(workerId int, job T) {
+	if wp.Closed {
+		log.Println("warning: tried sending job to closed pool")
+		return
+	}
 	wc := wp.workerMap[workerId]
 	wc <- job
 }
 
-func (wp *WorkerPool[T, V]) InitWorkers(task func(j T) V) {
+func (wp *WorkerPool[T, V]) InitWorkers(ctx context.Context, task func(j T) V) {
 
 	for _, v := range wp.workerMap {
-		go worker[T, V](
-			func(j T) V {
-				return task(j)
-			}, v, wp.Done)
-
+		go worker(ctx, task, v, wp.Done)
 	}
 
 }
 
 func (wp *WorkerPool[T, V]) Close() {
+	wp.Closed = true
 	for _, v := range wp.workerMap {
 		close(v)
 	}
 }
 
-func worker[T any, V any](task func(s T) V, jobs <-chan T, done chan<- V) {
+func worker[T any, V any](ctx context.Context, task func(s T) V, jobs <-chan T, done chan<- V) {
 
-	for j := range jobs {
-		res := task(j)
-		done <- res
+
+	for {
+		select {
+		case j := <-jobs:
+			res := task(j)
+			done <- res
+		case <-ctx.Done():
+			return
+		}
 	}
-
 }

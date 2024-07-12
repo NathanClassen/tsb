@@ -1,6 +1,7 @@
 package tsb
 
 import (
+	"context"
 	"database/sql"
 	"encoding/csv"
 	"errors"
@@ -9,9 +10,11 @@ import (
 	"io"
 	"log"
 	"os"
+	"slices"
 	"sync"
 	"time"
 	"tsb/worker"
+	"tsb/utils"
 
 	"github.com/cespare/xxhash"
 	"github.com/joho/godotenv"
@@ -27,6 +30,22 @@ type Record struct {
 	Host  string
 	Start string
 	End   string
+}
+
+type queryTimes struct {
+	start time.Time
+	end time.Time
+	duration time.Duration
+}
+
+type StatResult struct {
+	queryCount int
+	totalTime int
+	cumulativeTime int
+	minQueryTime int
+	maxQueryTime int
+	medianTime int
+	avgTime int
 }
 
 // parse cli arguments
@@ -61,13 +80,17 @@ func init() {
 
 func Execute() {
 	errors := make(chan error)
-	completedJobs := make(chan time.Duration, 2)
+	completedJobs := make(chan queryTimes, 2)
 
-	wp := worker.NewWorkerPool[Record, time.Duration](workerCount, completedJobs)
-	wp.InitWorkers(func(r Record) time.Duration {
-		startTime := time.Now()
-		ExecuteTSQuery(r.Start, r.End, r.Host)
-		return time.Since(startTime)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	wp := worker.NewWorkerPool[Record, queryTimes](workerCount, completedJobs)
+	wp.InitWorkers(ctx, func(r Record) queryTimes {
+		queryTime, err := executeTSQuery(r.Start, r.End, r.Host)
+		if err != nil {
+			errors <- err
+		}
+		return queryTime
 	})
 
 	csvRecords := make(chan Record)
@@ -79,47 +102,72 @@ func Execute() {
 		wg.Add(1)
 	}
 
-	go func() {
-		wg.Wait()
-		wp.Close()
-		db.Close()
-		close(completedJobs)
-	}()
+	go func(ctx context.Context, errors chan error) {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case err := <-errors:
+				log.Println("got ERRORR")
+				cancel()
+				wp.Close()
+				db.Close()
+				close(errors)
+				close(completedJobs)
+				log.Fatalf("encountered error: %v", err)
+			}
+		}
+	}(ctx, errors)
 
-	DisplayResults(completedJobs, &wg)
+	result := make(chan StatResult)
+	go calculateResult(completedJobs, result, &wg)
+
+	wg.Wait()
+
+	cancel()
+	wp.Close()
+	db.Close()
+	close(errors)
+	close(completedJobs)
+
+	res := <-result
+	fmt.Println(formattedResult(res))
 }
 
-func DisplayResults(c <-chan time.Duration, waitgroup *sync.WaitGroup) {
+func calculateResult(times <-chan queryTimes, res chan StatResult, waitgroup *sync.WaitGroup) {
 
-	var totalQueries int
-	var totalTime time.Time
-	var min time.Duration
-	var max time.Duration
+	result := StatResult{}
 
-	for dur := range c {
-		totalQueries++
-		totalTime = totalTime.Add(dur)
+	var durations []int
 
-		if dur < min {
-			min = dur
+	beginning := time.Now()
+	ending := time.Now()
+
+	for qt := range times {
+		durations = append(durations, int(qt.duration.Milliseconds()))
+
+		if qt.start.Before(beginning) {
+			beginning = qt.start
 		}
-		if dur > max {
-			max = dur
+
+		if qt.end.After(ending) {
+			ending = qt.end
 		}
+
 		waitgroup.Done()
 	}
 
-	fmt.Printf(`
-			Total Queries: %d
-			Total Execution Duration: %v
-			Max Execution Time (single query): %v
-			Min Execution Time (single query): %v
-		`,
-		totalQueries,
-		totalTime,
-		max,
-		min,
-	)
+	slices.Sort(durations)
+
+	result.totalTime		= int(ending.Sub(beginning).Milliseconds())
+	result.queryCount		= len(durations)
+	result.medianTime		= utils.CalculateMedian(durations)
+	result.avgTime			= utils.CalculateAvg(durations)
+	result.cumulativeTime	= utils.Sum(durations) 
+	result.minQueryTime		= durations[0]
+	result.maxQueryTime		= durations[result.queryCount - 1]
+
+	res <- result
 }
 
 func parseCSVFile(ec chan error, filename string, records chan Record) {
@@ -141,6 +189,7 @@ func parseCSVFile(ec chan error, filename string, records chan Record) {
 				break
 			} else {
 				ec <- err
+				return
 			}
 		}
 
@@ -154,11 +203,7 @@ func parseCSVFile(ec chan error, filename string, records chan Record) {
 	}
 }
 
-func ExecuteTSQuery(start, end, host string) {
-	var qstart time.Time
-	var qend time.Time
-	var min float64
-	var max float64
+func executeTSQuery(start, end, host string) (queryTimes, error) {
 
 	query := `with minutes as (
 		select
@@ -178,17 +223,45 @@ func ExecuteTSQuery(start, end, host string) {
 			where host = $3
 			group by minute;`
 
+	startT := time.Now()
 	rows, err := db.Query(query, start, end, host)
+	endT := time.Now()
 
 	if err != nil {
-		fmt.Println("query failed: ", err)
+		return queryTimes{}, err
 	}
 
-	for rows.Next() {
-		err = rows.Scan(&qstart, &qend, &min, &max)
-		if err != nil {
-			fmt.Println("failed to parse row: ", err)
+	rows.Close() //	not using the result
+
+	return queryTimes{startT, endT, endT.Sub(startT)}, nil
+}
+
+func formattedResult(stats StatResult) string {
+	format := func(ms int) string {
+		sec := ms / 1000
+		if sec > 0 {
+			return fmt.Sprintf("%ds %dms", sec, ms % 1000)
 		}
 
+		return fmt.Sprintf("%dms", ms)
 	}
+
+	return fmt.Sprintf(`
+	total queries:               %d
+	total time:                  %s
+	fumulative processing time:  %s
+	minimum single query time:   %s
+	maximum single query time:   %s
+	median query time:           %s
+	average query time:          %s
+	`,
+			stats.queryCount,
+			format(stats.totalTime),
+			format(stats.cumulativeTime),
+			format(stats.minQueryTime),
+			format(stats.maxQueryTime),
+			format(stats.medianTime),
+			format(stats.avgTime))
+
+
 }
