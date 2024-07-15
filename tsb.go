@@ -36,19 +36,19 @@ type Record struct {
 }
 
 type queryTimes struct {
-	start time.Time
-	end time.Time
+	start    time.Time
+	end      time.Time
 	duration time.Duration
 }
 
 type StatResult struct {
-	queryCount int
-	totalTime int
+	queryCount     int
+	totalTime      int
 	cumulativeTime int
-	minQueryTime int
-	maxQueryTime int
-	medianTime int
-	avgTime int
+	minQueryTime   int
+	maxQueryTime   int
+	medianTime     int
+	avgTime        int
 }
 
 // parse cli arguments
@@ -82,8 +82,6 @@ func init() {
 	db.SetMaxOpenConns(dbConns)
 }
 
-
-
 func Execute() {
 
 	errorChannel := make(chan error)
@@ -102,8 +100,7 @@ func Execute() {
 		return queryTime
 	})
 
-
-	go monitorErrors(ctx,cancel,errorChannel,completedJobs,csvRecords,wp,db)
+	go monitorErrors(ctx, cancel, errorChannel, completedJobs, csvRecords, wp, db)
 
 	go parseCSVFile(errorChannel, flag.Arg(0), csvRecords)
 
@@ -113,10 +110,7 @@ func Execute() {
 		wg.Add(1)
 	}
 
-
 	go calculateResult(completedJobs, result, &wg)
-
-	
 
 	time.Sleep(1 * time.Second)
 	wg.Wait()
@@ -175,13 +169,13 @@ func calculateResult(times <-chan queryTimes, res chan StatResult, waitgroup *sy
 		slices.Sort(durations)
 		fmt.Println("durations: ", durations)
 
-		result.totalTime		= int(ending.Sub(beginning).Milliseconds())
-		result.queryCount		= len(durations)
-		result.medianTime		= utils.CalculateMedian(durations)
-		result.avgTime			= utils.CalculateAvg(durations)
-		result.cumulativeTime	= utils.Sum(durations) 
-		result.minQueryTime		= durations[0]
-		result.maxQueryTime		= durations[result.queryCount - 1]
+		result.totalTime = int(ending.Sub(beginning).Milliseconds())
+		result.queryCount = len(durations)
+		result.medianTime = utils.CalculateMedian(durations)
+		result.avgTime = utils.CalculateAvg(durations)
+		result.cumulativeTime = utils.Sum(durations)
+		result.minQueryTime = durations[0]
+		result.maxQueryTime = durations[result.queryCount-1]
 	}
 
 	res <- result
@@ -210,16 +204,15 @@ func parseCSVFile(ec chan error, filename string, records chan Record) { // TODO
 		defer f.Close()
 	}
 
-
 	r := csv.NewReader(f)
-	
+
 	headers, err := r.Read()
 	if err != nil {
 		ec <- fmt.Errorf("error reading CSV headers: %v", err)
 		return
 	}
 	if len(headers) != 3 {
-		ec <- fmt.Errorf("CSV headers are invalid.\n\tGot: %v\n\tExpected: [hostname start_time end_time]",headers)
+		ec <- fmt.Errorf("CSV headers are invalid.\n\tGot: %v\n\tExpected: [hostname start_time end_time]", headers)
 		return
 	}
 
@@ -250,7 +243,6 @@ func parseCSVFile(ec chan error, filename string, records chan Record) { // TODO
 			ec <- fmt.Errorf("invalid end timestamp: %v", r[2])
 			return
 		}
-
 
 		records <- Record{
 			Host:  r[0],
@@ -298,7 +290,7 @@ func formattedResult(stats StatResult) string {
 	format := func(ms int) string {
 		sec := ms / 1000
 		if sec > 0 {
-			return fmt.Sprintf("%ds %dms", sec, ms % 1000)
+			return fmt.Sprintf("%ds %dms", sec, ms%1000)
 		}
 
 		return fmt.Sprintf("%dms", ms)
@@ -313,11 +305,11 @@ func formattedResult(stats StatResult) string {
 	median query time:           %s
 	average query time:          %s
 	`,
-			stats.queryCount,
-			format(stats.totalTime),
-			format(stats.cumulativeTime),
-			format(stats.minQueryTime),
-			format(stats.maxQueryTime),
-			format(stats.medianTime),
-			format(stats.avgTime))
+		stats.queryCount,
+		format(stats.totalTime),
+		format(stats.cumulativeTime),
+		format(stats.minQueryTime),
+		format(stats.maxQueryTime),
+		format(stats.medianTime),
+		format(stats.avgTime))
 }

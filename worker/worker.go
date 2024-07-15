@@ -8,7 +8,7 @@ import (
 type WorkerPool[T any, V any] struct {
 	Size      int
 	Done      chan V
-	Closed	  bool
+	Closed    bool
 	workerMap map[int]chan T
 }
 
@@ -52,7 +52,6 @@ func (wp *WorkerPool[T, V]) Close() {
 }
 
 func (wp *WorkerPool[T, V]) worker(ctx context.Context, task func(s T) V, jobs <-chan T, done chan<- V) {
-
 
 	for {
 		select {

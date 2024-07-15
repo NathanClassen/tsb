@@ -6,7 +6,7 @@ func CalculateMedian(of []int) int {
 	if l&1 == 1 {
 		return of[mid]
 	} else {
-		return (of[mid -1] + of[mid]) / 2
+		return (of[mid-1] + of[mid]) / 2
 	}
 }
 
