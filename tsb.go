@@ -25,6 +25,7 @@ import (
 )
 
 var workerCount int
+var dbConns int
 var wg sync.WaitGroup
 var db *sql.DB
 
@@ -53,6 +54,7 @@ type StatResult struct {
 // parse cli arguments
 func init() {
 	flag.IntVar(&workerCount, "w", 1, "number of workers to create for executing queries")
+	flag.IntVar(&dbConns, "d", 1, "number of workers to create for executing queries")
 
 	flag.Parse()
 }
@@ -77,7 +79,7 @@ func init() {
 		log.Fatal("could not connect to database: ", err)
 	}
 
-	db.SetMaxOpenConns(workerCount)
+	db.SetMaxOpenConns(dbConns)
 }
 
 
@@ -171,6 +173,7 @@ func calculateResult(times <-chan queryTimes, res chan StatResult, waitgroup *sy
 
 	if len(durations) > 0 {
 		slices.Sort(durations)
+		fmt.Println("durations: ", durations)
 
 		result.totalTime		= int(ending.Sub(beginning).Milliseconds())
 		result.queryCount		= len(durations)

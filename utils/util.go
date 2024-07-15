@@ -16,8 +16,9 @@ func CalculateAvg(of []int) int {
 
 func Sum(all []int) int {
 	sum := 0
-	for i := range all {
-		sum += i
+	for _, num := range all {
+		sum += num
+
 	}
 	return sum
 }
