@@ -1,0 +1,9 @@
+// wait, then throw nil error to monitor. Itll close everything but not falt
+	// fmt.Println("waited")
+	// cancel()
+	// fmt.Println("cancelled")
+	// fmt.Println("will close wp")
+	// wp.Close()						How can I get rid of these commented out calls and rely
+	// db.Close()		only on the monitoring func to close things? The calculate > wg.Done > wait > 
+	// fmt.Println("closed db")		close completedJobs flow needs to change. cJ needs to be closed for the calc
+	// close(errorChannel)		to finish, but I would rather the monitor do that closing.

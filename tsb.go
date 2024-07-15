@@ -10,11 +10,13 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
-	"tsb/worker"
 	"tsb/utils"
+	"tsb/worker"
 
 	"github.com/cespare/xxhash"
 	"github.com/joho/godotenv"
@@ -28,8 +30,8 @@ var db *sql.DB
 
 type Record struct {
 	Host  string
-	Start string
-	End   string
+	Start time.Time
+	End   time.Time
 }
 
 type queryTimes struct {
@@ -78,9 +80,14 @@ func init() {
 	db.SetMaxOpenConns(workerCount)
 }
 
+
+
 func Execute() {
-	errors := make(chan error)
-	completedJobs := make(chan queryTimes, 2)
+
+	errorChannel := make(chan error)
+	csvRecords := make(chan Record)
+	completedJobs := make(chan queryTimes)
+	result := make(chan StatResult)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -88,13 +95,15 @@ func Execute() {
 	wp.InitWorkers(ctx, func(r Record) queryTimes {
 		queryTime, err := executeTSQuery(r.Start, r.End, r.Host)
 		if err != nil {
-			errors <- err
+			errorChannel <- err
 		}
 		return queryTime
 	})
 
-	csvRecords := make(chan Record)
-	go parseCSVFile(errors, flag.Arg(0), csvRecords)
+
+	go monitorErrors(ctx,cancel,errorChannel,completedJobs,csvRecords,wp,db)
+
+	go parseCSVFile(errorChannel, flag.Arg(0), csvRecords)
 
 	for r := range csvRecords {
 		workerId := int(xxhash.Sum64String(r.Host) % uint64(workerCount))
@@ -102,36 +111,39 @@ func Execute() {
 		wg.Add(1)
 	}
 
-	go func(ctx context.Context, errors chan error) {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case err := <-errors:
-				log.Println("got ERRORR")
-				cancel()
-				wp.Close()
-				db.Close()
-				close(errors)
-				close(completedJobs)
-				log.Fatalf("encountered error: %v", err)
-			}
-		}
-	}(ctx, errors)
 
-	result := make(chan StatResult)
 	go calculateResult(completedJobs, result, &wg)
 
+	
+
+	time.Sleep(1 * time.Second)
 	wg.Wait()
 
 	cancel()
 	wp.Close()
 	db.Close()
-	close(errors)
+	close(errorChannel)
 	close(completedJobs)
 
 	res := <-result
 	fmt.Println(formattedResult(res))
+}
+
+func monitorErrors(ctx context.Context, canc context.CancelFunc, errorc chan error, jobc chan queryTimes, csvc chan Record, wp *worker.WorkerPool[Record, queryTimes], db *sql.DB) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case err := <-errorc:
+			canc()
+			wp.Close()
+			db.Close()
+			close(errorc)
+			close(jobc)
+			close(csvc)
+			log.Fatalf("encountered error: %v", err)
+		}
+	}
 }
 
 func calculateResult(times <-chan queryTimes, res chan StatResult, waitgroup *sync.WaitGroup) {
@@ -157,30 +169,56 @@ func calculateResult(times <-chan queryTimes, res chan StatResult, waitgroup *sy
 		waitgroup.Done()
 	}
 
-	slices.Sort(durations)
+	if len(durations) > 0 {
+		slices.Sort(durations)
 
-	result.totalTime		= int(ending.Sub(beginning).Milliseconds())
-	result.queryCount		= len(durations)
-	result.medianTime		= utils.CalculateMedian(durations)
-	result.avgTime			= utils.CalculateAvg(durations)
-	result.cumulativeTime	= utils.Sum(durations) 
-	result.minQueryTime		= durations[0]
-	result.maxQueryTime		= durations[result.queryCount - 1]
+		result.totalTime		= int(ending.Sub(beginning).Milliseconds())
+		result.queryCount		= len(durations)
+		result.medianTime		= utils.CalculateMedian(durations)
+		result.avgTime			= utils.CalculateAvg(durations)
+		result.cumulativeTime	= utils.Sum(durations) 
+		result.minQueryTime		= durations[0]
+		result.maxQueryTime		= durations[result.queryCount - 1]
+	}
 
 	res <- result
 }
 
-func parseCSVFile(ec chan error, filename string, records chan Record) {
-	f, err := os.Open(filename)
-	if err != nil {
-		ec <- err
+func parseCSVFile(ec chan error, filename string, records chan Record) { // TODO: probably dont close records in here, let error watcher do that.. of do it here and not there?
+	var err error
+	var f *os.File
+
+	const TIME_FORMAT = "2006-01-02 15:04:05"
+	if filename == "" {
+		f = os.Stdin
+	} else {
+		// Check if the file has a .csv extension
+		if ext := strings.ToLower(filepath.Ext(filename)); ext != ".csv" {
+			ec <- fmt.Errorf("file %s is not a CSV file", filename)
+			return
+		}
+
+		// Open the file
+		f, err = os.Open(filename)
+		if err != nil {
+			ec <- err
+			return
+		}
+		defer f.Close()
 	}
 
-	defer f.Close()
-	defer close(records)
 
 	r := csv.NewReader(f)
-	r.Read() //	TEMP: read off headers from first line-find better way?
+	
+	headers, err := r.Read()
+	if err != nil {
+		ec <- fmt.Errorf("error reading CSV headers: %v", err)
+		return
+	}
+	if len(headers) != 3 {
+		ec <- fmt.Errorf("CSV headers are invalid.\n\tGot: %v\n\tExpected: [hostname start_time end_time]",headers)
+		return
+	}
 
 	for {
 		r, err := r.Read()
@@ -188,22 +226,39 @@ func parseCSVFile(ec chan error, filename string, records chan Record) {
 			if errors.Is(err, io.EOF) {
 				break
 			} else {
-				ec <- err
+				ec <- fmt.Errorf("error reading CSV record: %v", err)
 				return
 			}
 		}
 
-		record := Record{
-			Host:  r[0],
-			Start: r[1],
-			End:   r[2],
+		if len(r) != 3 {
+			ec <- fmt.Errorf("invalid record length: %v", r)
+			return
 		}
 
-		records <- record
+		startTime, err := time.Parse(TIME_FORMAT, r[1])
+		if err != nil {
+			ec <- fmt.Errorf("invalid start timestamp: %v", r[1])
+			return
+		}
+
+		endTime, err := time.Parse(TIME_FORMAT, r[2])
+		if err != nil {
+			ec <- fmt.Errorf("invalid end timestamp: %v", r[2])
+			return
+		}
+
+
+		records <- Record{
+			Host:  r[0],
+			Start: startTime,
+			End:   endTime,
+		}
 	}
+	close(records)
 }
 
-func executeTSQuery(start, end, host string) (queryTimes, error) {
+func executeTSQuery(start, end time.Time, host string) (queryTimes, error) {
 
 	query := `with minutes as (
 		select
@@ -262,6 +317,4 @@ func formattedResult(stats StatResult) string {
 			format(stats.maxQueryTime),
 			format(stats.medianTime),
 			format(stats.avgTime))
-
-
 }
