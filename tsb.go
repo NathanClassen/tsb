@@ -24,12 +24,15 @@ import (
 	_ "github.com/lib/pq"
 )
 
-var workerCount int
-var dbConns int
-var wg sync.WaitGroup
-var db *sql.DB
+var (
+	workerCount int
+	mu			sync.Mutex
+	dbConns		int
+	wg			sync.WaitGroup
+	db			*sql.DB
+)
 
-type Record struct {
+type record struct {
 	Host  string
 	Start time.Time
 	End   time.Time
@@ -41,7 +44,7 @@ type queryTimes struct {
 	duration time.Duration
 }
 
-type StatResult struct {
+type statResult struct {
 	queryCount     int
 	totalTime      int
 	cumulativeTime int
@@ -51,16 +54,13 @@ type StatResult struct {
 	avgTime        int
 }
 
-// parse cli arguments
-func init() {
+func parseCLIFlags() {
 	flag.IntVar(&workerCount, "w", 1, "number of workers to create for executing queries")
 	flag.IntVar(&dbConns, "d", 1, "number of workers to create for executing queries")
-
 	flag.Parse()
 }
 
-// initialize database connections
-func init() {
+func initDB() {
 	var err error
 
 	if err = godotenv.Load(); err != nil {
@@ -75,83 +75,86 @@ func init() {
 		os.Getenv("DB_SSL_MODE"),
 	)
 
-	if db, err = sql.Open(os.Getenv("DB_DATABASE"), connstr); err != nil {
-		log.Fatal("could not connect to database: ", err)
+	db, err = sql.Open(os.Getenv("DB_DATABASE"), connstr)
+	
+	if err != nil {
+		log.Fatalf("could not connect to database: %v\n", err)
 	}
 
 	db.SetMaxOpenConns(dbConns)
+
+	if err = db.Ping(); err != nil {
+		log.Fatalf("could not establish a connection to database: %v\n", err)
+	}
+
+	
 }
 
 func Execute() {
+	parseCLIFlags()
+	initDB()
 
 	errorChannel := make(chan error)
-	csvRecords := make(chan Record)
+	csvRecords := make(chan record)
 	completedJobs := make(chan queryTimes)
-	result := make(chan StatResult)
+	result := make(chan statResult)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	wp := worker.NewWorkerPool[Record, queryTimes](workerCount, completedJobs)
-	wp.InitWorkers(ctx, func(r Record) queryTimes {
+	wp := worker.NewWorkerPool[record, queryTimes](workerCount, completedJobs)
+	wp.InitWorkers(ctx, func(r record) queryTimes {
 		queryTime, err := executeTSQuery(r.Start, r.End, r.Host)
 		if err != nil {
+
 			errorChannel <- err
 		}
 		return queryTime
 	})
 
-	go monitorErrors(ctx, cancel, errorChannel, completedJobs, csvRecords, wp, db)
+	go monitorErrors(ctx, cancel, &mu, errorChannel, completedJobs, csvRecords, wp, db)
 
+	//	parse CSV in separate routine so we can immediately begin processing input
 	go parseCSVFile(errorChannel, flag.Arg(0), csvRecords)
 
+	//	start routine to build the final result as soon as workers start reporting stats
+	go calculateResult(completedJobs, result, &wg)
+
 	for r := range csvRecords {
-		workerId := int(xxhash.Sum64String(r.Host) % uint64(workerCount))
-		go wp.SendJob(workerId, r)
+		workerID := int(xxhash.Sum64String(r.Host) % uint64(workerCount))
+		//	build a job queue of sorts by starting routine for earch record, that will send job as soon
+		//		as the worker correct worker can take another job
+		mu.Lock()
+		go wp.SendJob(workerID, r)
+		mu.Unlock()
 		wg.Add(1)
 	}
 
-	go calculateResult(completedJobs, result, &wg)
 
-	time.Sleep(1 * time.Second)
 	wg.Wait()
-
 	cancel()
-	wp.Close()
-	db.Close()
-	close(errorChannel)
+	
+	mu.Lock()
 	close(completedJobs)
+	mu.Unlock()
 
 	res := <-result
 	fmt.Println(formattedResult(res))
+
+	wp.Close()
+	db.Close()
+	close(errorChannel)
 }
 
-func monitorErrors(ctx context.Context, canc context.CancelFunc, errorc chan error, jobc chan queryTimes, csvc chan Record, wp *worker.WorkerPool[Record, queryTimes], db *sql.DB) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case err := <-errorc:
-			canc()
-			wp.Close()
-			db.Close()
-			close(errorc)
-			close(jobc)
-			close(csvc)
-			log.Fatalf("encountered error: %v", err)
-		}
-	}
-}
+func calculateResult(completedJobs <-chan queryTimes, res chan statResult, waitgroup *sync.WaitGroup) {
 
-func calculateResult(times <-chan queryTimes, res chan StatResult, waitgroup *sync.WaitGroup) {
-
-	result := StatResult{}
+	result := statResult{}
 
 	var durations []int
 
 	beginning := time.Now()
 	ending := time.Now()
 
-	for qt := range times {
+	for qt := range completedJobs {
 		durations = append(durations, int(qt.duration.Milliseconds()))
 
 		if qt.start.Before(beginning) {
@@ -167,7 +170,7 @@ func calculateResult(times <-chan queryTimes, res chan StatResult, waitgroup *sy
 
 	if len(durations) > 0 {
 		slices.Sort(durations)
-		fmt.Println("durations: ", durations)
+		// fmt.Println("durations: ", durations)
 
 		result.totalTime = int(ending.Sub(beginning).Milliseconds())
 		result.queryCount = len(durations)
@@ -176,26 +179,24 @@ func calculateResult(times <-chan queryTimes, res chan StatResult, waitgroup *sy
 		result.cumulativeTime = utils.Sum(durations)
 		result.minQueryTime = durations[0]
 		result.maxQueryTime = durations[result.queryCount-1]
-	}
 
-	res <- result
+		res <- result
+	}
 }
 
-func parseCSVFile(ec chan error, filename string, records chan Record) { // TODO: probably dont close records in here, let error watcher do that.. of do it here and not there?
+func parseCSVFile(ec chan error, filename string, records chan record) { // TODO: probably dont close records in here, let error watcher do that.. of do it here and not there?
+	const TIME_FORMAT = "2006-01-02 15:04:05"
 	var err error
 	var f *os.File
-
-	const TIME_FORMAT = "2006-01-02 15:04:05"
+	
 	if filename == "" {
 		f = os.Stdin
 	} else {
-		// Check if the file has a .csv extension
 		if ext := strings.ToLower(filepath.Ext(filename)); ext != ".csv" {
 			ec <- fmt.Errorf("file %s is not a CSV file", filename)
 			return
 		}
 
-		// Open the file
 		f, err = os.Open(filename)
 		if err != nil {
 			ec <- err
@@ -244,13 +245,31 @@ func parseCSVFile(ec chan error, filename string, records chan Record) { // TODO
 			return
 		}
 
-		records <- Record{
+		records <- record{
 			Host:  r[0],
 			Start: startTime,
 			End:   endTime,
 		}
 	}
 	close(records)
+}
+
+func monitorErrors(ctx context.Context, canc context.CancelFunc, mu *sync.Mutex, errorc chan error, jobc chan queryTimes, csvc chan record, wp *worker.WorkerPool[record, queryTimes], db *sql.DB) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case err := <-errorc:
+			mu.Lock()
+			canc()
+			wp.Close()
+			db.Close()
+			close(errorc)
+			close(jobc)
+			log.Fatalf("encountered error: %v", err)
+			mu.Unlock()
+		}
+	}
 }
 
 func executeTSQuery(start, end time.Time, host string) (queryTimes, error) {
@@ -286,7 +305,7 @@ func executeTSQuery(start, end time.Time, host string) (queryTimes, error) {
 	return queryTimes{startT, endT, endT.Sub(startT)}, nil
 }
 
-func formattedResult(stats StatResult) string {
+func formattedResult(stats statResult) string {
 	format := func(ms int) string {
 		sec := ms / 1000
 		if sec > 0 {

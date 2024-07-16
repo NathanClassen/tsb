@@ -45,25 +45,21 @@ func (wp *WorkerPool[T, V]) InitWorkers(ctx context.Context, task func(j T) V) {
 }
 
 func (wp *WorkerPool[T, V]) Close() {
-	wp.Closed = true
-	for _, v := range wp.workerMap {
-		close(v)
+	if !wp.Closed {
+		for _, v := range wp.workerMap {
+			close(v)
+		}
 	}
+	wp.Closed = true
 }
 
 func (wp *WorkerPool[T, V]) worker(ctx context.Context, task func(s T) V, jobs <-chan T, done chan<- V) {
+	for j := range jobs {
 
-	for {
-		select {
-		case j := <-jobs: //	TODO: can this be removed after cleaning error handling?
-			//	having strange issue where if a non-existent file is given as input, this channel
-			//	sometimes recieves zero-time.Time value..
-			if !wp.Closed {
-				res := task(j)
-				done <- res
-			}
-		case <-ctx.Done():
-			return
+		if !wp.Closed {
+			res := task(j)
+			done <- res
 		}
+
 	}
 }
