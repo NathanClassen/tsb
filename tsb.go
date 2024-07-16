@@ -1,7 +1,6 @@
 package tsb
 
 import (
-	"context"
 	"database/sql"
 	"encoding/csv"
 	"errors"
@@ -97,19 +96,18 @@ func Execute() {
 	completedJobs := make(chan queryTimes)
 	result := make(chan statResult)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	// ctx, cancel := context.WithCancel(context.Background())
 
 	wp := worker.NewWorkerPool[record, queryTimes](workerCount, completedJobs)
 	wp.InitWorkers(func(r record) queryTimes {
 		queryTime, err := executeTSQuery(r.Start, r.End, r.Host)
 		if err != nil {
-
-			errorChannel <- err
+			log.Fatalf("error encountered when querying database: %v\n",err)
 		}
 		return queryTime
 	})
 
-	go monitorErrors(ctx, cancel, &mu, errorChannel, completedJobs, csvRecords, wp, db)
+	go monitorErrors(&mu, errorChannel, completedJobs, csvRecords, wp, db)
 
 	//	parse CSV in separate routine so we can immediately begin processing input
 	go parseCSVFile(errorChannel, flag.Arg(0), csvRecords)
@@ -127,7 +125,6 @@ func Execute() {
 
 
 	wg.Wait()
-	cancel()
 	mu.Lock()
 	close(completedJobs)
 	mu.Unlock()
@@ -249,21 +246,15 @@ func parseCSVFile(ec chan error, filename string, records chan record) { // TODO
 	close(records)
 }
 
-func monitorErrors(ctx context.Context, canc context.CancelFunc, mu *sync.Mutex, errorc chan error, jobc chan queryTimes, csvc chan record, wp *worker.WorkerPool[record, queryTimes], db *sql.DB) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case err := <-errorc:
-			mu.Lock()
-			canc()
-			wp.Close()
-			db.Close()
-			close(errorc)
-			close(jobc)
-			log.Fatalf("encountered error: %v", err)
-			mu.Unlock()
-		}
+func monitorErrors(mu *sync.Mutex, errorc chan error, jobc chan queryTimes, csvc chan record, wp *worker.WorkerPool[record, queryTimes], db *sql.DB) {
+	for err := range errorc {
+		mu.Lock()
+		wp.Close()
+		db.Close()
+		close(errorc)
+		close(jobc)
+		log.Fatalf("encountered error: %v", err)
+		mu.Unlock()
 	}
 }
 
