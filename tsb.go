@@ -86,8 +86,6 @@ func initDB() {
 	if err = db.Ping(); err != nil {
 		log.Fatalf("could not establish a connection to database: %v\n", err)
 	}
-
-	
 }
 
 func Execute() {
@@ -102,7 +100,7 @@ func Execute() {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	wp := worker.NewWorkerPool[record, queryTimes](workerCount, completedJobs)
-	wp.InitWorkers(ctx, func(r record) queryTimes {
+	wp.InitWorkers(func(r record) queryTimes {
 		queryTime, err := executeTSQuery(r.Start, r.End, r.Host)
 		if err != nil {
 
@@ -123,16 +121,13 @@ func Execute() {
 		workerID := int(xxhash.Sum64String(r.Host) % uint64(workerCount))
 		//	build a job queue of sorts by starting routine for earch record, that will send job as soon
 		//		as the worker correct worker can take another job
-		mu.Lock()
-		go wp.SendJob(workerID, r)
-		mu.Unlock()
+		go wp.SendJob(&mu, workerID, r)
 		wg.Add(1)
 	}
 
 
 	wg.Wait()
 	cancel()
-	
 	mu.Lock()
 	close(completedJobs)
 	mu.Unlock()
@@ -300,7 +295,7 @@ func executeTSQuery(start, end time.Time, host string) (queryTimes, error) {
 		return queryTimes{}, err
 	}
 
-	rows.Close() //	not using the result
+	rows.Close()
 
 	return queryTimes{startT, endT, endT.Sub(startT)}, nil
 }

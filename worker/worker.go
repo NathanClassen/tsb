@@ -1,8 +1,7 @@
 package worker
 
 import (
-	"context"
-	"log"
+	"sync"
 )
 
 type WorkerPool[T any, V any] struct {
@@ -27,19 +26,22 @@ func NewWorkerPool[T any, V any](size int, done chan V) *WorkerPool[T, V] {
 
 }
 
-func (wp *WorkerPool[T, V]) SendJob(workerId int, job T) {
-	if wp.Closed {
-		log.Println("warning: tried sending job to closed pool")
-		return
-	}
+func (wp *WorkerPool[T, V]) SendJob(mu *sync.Mutex, workerId int, job T) {
 	wc := wp.workerMap[workerId]
+	
+	//	prevents sending to close channels is error is encountered, also throttles the
+	//		workers a bit resulting in improved query performance but longer program exectution
+	mu.Lock()
 	wc <- job
+	mu.Unlock()
+
+
 }
 
-func (wp *WorkerPool[T, V]) InitWorkers(ctx context.Context, task func(j T) V) {
+func (wp *WorkerPool[T, V]) InitWorkers(task func(j T) V) {
 
 	for _, v := range wp.workerMap {
-		go wp.worker(ctx, task, v, wp.Done)
+		go wp.worker(task, v, wp.Done)
 	}
 
 }
@@ -53,7 +55,7 @@ func (wp *WorkerPool[T, V]) Close() {
 	wp.Closed = true
 }
 
-func (wp *WorkerPool[T, V]) worker(ctx context.Context, task func(s T) V, jobs <-chan T, done chan<- V) {
+func (wp *WorkerPool[T, V]) worker(task func(s T) V, jobs <-chan T, done chan<- V) {
 	for j := range jobs {
 
 		if !wp.Closed {
