@@ -25,10 +25,10 @@ import (
 
 var (
 	workerCount int
-	mu			sync.Mutex
-	dbConns		int
-	wg			sync.WaitGroup
-	db			*sql.DB
+	mu          sync.Mutex
+	dbConns     int
+	wg          sync.WaitGroup
+	db          *sql.DB
 )
 
 type record struct {
@@ -55,7 +55,7 @@ type statResult struct {
 
 func parseCLIFlags() {
 	flag.IntVar(&workerCount, "w", 1, "number of workers to create for executing queries")
-	flag.IntVar(&dbConns, "d", 1, "number of workers to create for executing queries")
+	flag.IntVar(&dbConns, "d", 10, "number of workers to create for executing queries")
 	flag.Parse()
 }
 
@@ -75,9 +75,13 @@ func initDB() {
 	)
 
 	db, err = sql.Open(os.Getenv("DB_DATABASE"), connstr)
-	
+
 	if err != nil {
 		log.Fatalf("could not connect to database: %v\n", err)
+	}
+
+	if dbConns > workerCount {
+		dbConns = workerCount
 	}
 
 	db.SetMaxOpenConns(dbConns)
@@ -91,18 +95,20 @@ func Execute() {
 	parseCLIFlags()
 	initDB()
 
+	fmt.Printf("starting tsb with %d workers and a max of %d open database connections\n\n", workerCount, dbConns)
+
 	errorChannel := make(chan error)
 	csvRecords := make(chan record)
 	completedJobs := make(chan queryTimes)
 	result := make(chan statResult)
 
-	// ctx, cancel := context.WithCancel(context.Background())
-
 	wp := worker.NewWorkerPool[record, queryTimes](workerCount, completedJobs)
+
+	//	initialize pool of workers, passing in a function for the task they will perform
 	wp.InitWorkers(func(r record) queryTimes {
 		queryTime, err := executeTSQuery(r.Start, r.End, r.Host)
 		if err != nil {
-			log.Fatalf("error encountered when querying database: %v\n",err)
+			log.Fatalf("error encountered when querying database: %v\n", err)
 		}
 		return queryTime
 	})
@@ -117,14 +123,15 @@ func Execute() {
 
 	for r := range csvRecords {
 		workerID := int(xxhash.Sum64String(r.Host) % uint64(workerCount))
-		//	build a job queue of sorts by starting routine for earch record, that will send job as soon
-		//		as the worker correct worker can take another job
+		//	build a job queue of sorts by starting routine for each record–these will send jobs as soon
+		//		as the correct worker is available to take another job
 		go wp.SendJob(&mu, workerID, r)
 		wg.Add(1)
 	}
 
-
 	wg.Wait()
+
+	//	make sure the errorMonitoring routine does not try to close this channel after main closes, and vice versa
 	mu.Lock()
 	close(completedJobs)
 	mu.Unlock()
@@ -162,7 +169,6 @@ func calculateResult(completedJobs <-chan queryTimes, res chan statResult, waitg
 
 	if len(durations) > 0 {
 		slices.Sort(durations)
-		// fmt.Println("durations: ", durations)
 
 		result.totalTime = int(ending.Sub(beginning).Milliseconds())
 		result.queryCount = len(durations)
@@ -176,11 +182,11 @@ func calculateResult(completedJobs <-chan queryTimes, res chan statResult, waitg
 	}
 }
 
-func parseCSVFile(ec chan error, filename string, records chan record) { // TODO: probably dont close records in here, let error watcher do that.. of do it here and not there?
+func parseCSVFile(ec chan error, filename string, records chan record) {
 	const TIME_FORMAT = "2006-01-02 15:04:05"
 	var err error
 	var f *os.File
-	
+
 	if filename == "" {
 		f = os.Stdin
 	} else {

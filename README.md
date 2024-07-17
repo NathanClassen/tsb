@@ -4,30 +4,40 @@
 
 ## Setup guide
 
-### Build `tsb`
+### Prerequisites
 
-Make sure you have Go installed: `go version`
+You must have [Go](https://go.dev/) installed: `go version`
+
+You must have [Docker](https://www.docker.com/) installed and running
+
+### Build `tsb`
 
 Run `make build` to build the cli tool. There will now be a binary called `tsb` at the root of the project.
 
 ### Environment
 
-To connect to the example database `tsb` relies on the environment variables found in `.env-example`.
+To connect to the example database `tsb` requires a dotenv file to hold the environment variables for the database connection.
+
+An example of these can be found in `.env-example`. The values there will work for the example database. To make the environment available:
 
 EITHER:
-- rename this file to `.env`, or
-- create a new `.env` file with different credentials if you want to connect to a different database. 
+- rename the `.env-example` file to `.env`, **or**
+- create a new `.env` with the appropriate variables set
 
 ### Database
 
 `tsb` needs to connect to a database to run the queries.
 
-To create the example TimescaleDB instance and populate with sample data:
+To create start the example TimescaleDB instance and populate with sample data:
 
 1. run `docker compose up -d db` to start the _homework_ database on port 5432
 2. _after_ the database service has been started with docker compose, run `. db/import-data.sh ` to populate with data.
 
 ## Usage:
+
+The **db** directory has a sample of query parameters in a CSV file called `query_params.csv`. After following the Setup guide, you can test the application with this file by running the following command from the root of the project:
+
+`./tsb -w 50 -d 25 db/query_params.csv`
 
     tsb [OPTIONS] [FILENAME]
 
@@ -37,14 +47,16 @@ To create the example TimescaleDB instance and populate with sample data:
         Specify the number of workers to create. Defaults to 1 if not provided.
 
     -d
-        Specify the maximum number of database connections to use. Defaults to 1 if not provided.
+        Specify the maximum number of database connections to use. Defaults to 10 if not provided.
 
     FILENAME
         The name of the CSV file to be processed. If no filename is provided, tsb will read from stdin.
 
     Example:
 
-        ./tsb -w 50 -d 25 /path/to/myParams.csv
+        ./tsb /path/to/myParams.csv
+        ./tsb -w 50 /path/to/myParams.csv
+        ./tsb -w 50 /path/to/myParams.csv
 
 `tsb` will operate on CSV input that follows this pattern:
 

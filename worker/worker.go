@@ -28,13 +28,12 @@ func NewWorkerPool[T any, V any](size int, done chan V) *WorkerPool[T, V] {
 
 func (wp *WorkerPool[T, V]) SendJob(mu *sync.Mutex, workerId int, job T) {
 	wc := wp.workerMap[workerId]
-	
-	//	prevents sending to close channels is error is encountered, also throttles the
-	//		workers a bit resulting in improved query performance but longer program exectution
+
+	//	prevents sending to close channels if error is encountered, also throttles the
+	//	workers a bit resulting in improved query performance but longer program exectution
 	mu.Lock()
 	wc <- job
 	mu.Unlock()
-
 
 }
 
