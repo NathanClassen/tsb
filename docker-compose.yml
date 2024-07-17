@@ -8,9 +8,7 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: password
-      POSTGRES_DB: homework # creates db so no need in schema, rm this
     volumes:
-      - db:/var/lib/postgresql/data
-
-volumes:
-  db:
+      - ./db/cpu_usage.sql:/docker-entrypoint-initdb.d/script.sql
+      - ./db/import-data.sh:/docker-entrypoint-initdb.d/setup.sh
+      - ./db/cpu_usage.csv:/docker-entrypoint-initdb.d/cpu_usage.csv
