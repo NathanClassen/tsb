@@ -129,7 +129,10 @@ func Execute() {
 		wg.Add(1)
 	}
 
+	tk := time.NewTicker(1*time.Second)
+	go printDot(tk.C)
 	wg.Wait()
+	tk.Stop()
 
 	//	make sure the errorMonitoring routine does not try to close this channel after main closes, and vice versa
 	mu.Lock()
@@ -308,6 +311,7 @@ func formattedResult(stats statResult) string {
 	}
 
 	return fmt.Sprintf(`
+	
 	total queries:               %d
 	total time:                  %s
 	cumulative processing time:  %s
@@ -323,4 +327,10 @@ func formattedResult(stats statResult) string {
 		format(stats.maxQueryTime),
 		format(stats.medianTime),
 		format(stats.avgTime))
+}
+
+func printDot(tk <-chan time.Time) {
+	for range tk {
+		fmt.Print(".")
+	}
 }
