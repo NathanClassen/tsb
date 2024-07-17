@@ -30,14 +30,30 @@ EITHER:
 
 To create start the example TimescaleDB instance and populate with sample data:
 
-1. run `docker compose up -d db` to start the _homework_ database on port 5432
-2. _after_ the database service has been started with docker compose, run `. db/import-data.sh ` to populate with data.
+run `docker compose up -d` to start the _homework_ database on port 5432
 
-## Usage:
+## Test run:
 
-The **db** directory has a sample of query parameters in a CSV file called `query_params.csv`. After following the Setup guide, you can test the application with this file by running the following command from the root of the project:
+The **db** directory has a sample of query parameters in a CSV file called `query_params.csv`. After following the Setup guide, you can use this file to test the application by running the following command from the root of the project:
 
 `./tsb -w 50 -d 25 db/query_params.csv`
+
+This command tells `tsb` to create 50 workers which will share a pool of 25 database connections, to read each line of `db/query_params.csv`, executing a SELECT query for each one.
+
+After a few moments it will output stats about the performance of the query. For example:
+
+    starting tsb with 50 workers and a max of 10 open database connections
+
+
+            total queries:               200
+            total time:                  5s 22ms
+            cumulative processing time:  17s 682ms
+            minimum single query time:   60ms
+            maximum single query time:   175ms
+            median query time:           83ms
+            average query time:          88ms
+
+## Usage:
 
     tsb [OPTIONS] [FILENAME]
 
@@ -59,6 +75,8 @@ The **db** directory has a sample of query parameters in a CSV file called `quer
         ./tsb -w 50 /path/to/myParams.csv
 
 `tsb` will operate on CSV input that follows this pattern:
+
+The CSV must have 3 headers corresponding to a hostname string, followed by two timestamps
 
     hostname,start_time,end_time
     host_000008,2017-01-01 08:59:22,2017-01-01 09:59:22
